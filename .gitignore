@@ -1,0 +1,10 @@
+# API 키 — 절대 커밋하지 마세요
+.env
+.env.local
+.env.*.local
+
+node_modules/
+dist/
+
+.DS_Store
+Thumbs.db

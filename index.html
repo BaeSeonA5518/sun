@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SEONAFLIX</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- 헤더 -->
+  <header class="header">
+    <div class="header__inner">
+      <h1 class="logo">SEONAFLIX</h1>
+      <nav class="nav">
+        <a class="nav__item" href="#row-movie-now_playing">상영 중</a>
+        <a class="nav__item" href="#row-movie-popular">인기 영화</a>
+        <a class="nav__item" href="#row-movie-top_rated">최고 평점</a>
+        <a class="nav__item" href="#row-movie-upcoming">개봉 예정</a>
+        <span class="nav__divider">|</span>
+        <a class="nav__item" href="#row-tv-airing_today">오늘 방영</a>
+        <a class="nav__item" href="#row-tv-on_the_air">방영 중</a>
+        <a class="nav__item" href="#row-tv-popular">인기 TV</a>
+        <a class="nav__item" href="#row-tv-top_rated">최고 평점 TV</a>
+      </nav>
+      <div class="header__search">
+        <button class="header__search-icon" id="headerSearchToggle">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </button>
+        <input type="text" id="searchInput" class="header__search-input" placeholder="영화 · TV 제목 검색" />
+      </div>
+    </div>
+  </header>
+
+  <!-- 히어로 배너 -->
+  <section class="hero" id="hero">
+    <div class="hero__overlay"></div>
+    <div class="hero__content">
+      <p class="hero__label" id="heroLabel">지금 상영 중</p>
+      <h2 class="hero__title" id="heroTitle">로딩 중...</h2>
+      <p class="hero__desc" id="heroDesc"></p>
+      <div class="hero__buttons">
+        <button class="btn btn--play" id="heroPlayBtn">▶ 재생</button>
+        <button class="btn btn--info" id="heroInfoBtn">ℹ 상세 정보</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 메인 콘텐츠: 카테고리 행들 -->
+  <main class="main">
+
+    <!-- 검색 결과 -->
+    <section class="search-result-section" id="searchResultSection" style="display:none">
+      <h3 class="row__title">검색 결과</h3>
+      <div class="movie-grid" id="searchGrid"></div>
+    </section>
+
+    <!-- 카테고리 행 (JS가 동적으로 생성) -->
+    <div id="rowsContainer"></div>
+
+  </main>
+
+  <!-- 추천 플로팅 버튼 -->
+  <button class="btn-recommend-float" id="recommendBtn" aria-label="맞춤 추천">
+    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/>
+      <path d="M5 3v4M19 17v4M3 5h4M17 19h4"/>
+    </svg>
+    <span>추천</span>
+  </button>
+
+  <!-- 추천 모달 -->
+  <div class="rec-backdrop" id="recBackdrop">
+    <div class="rec-modal">
+
+      <!-- 헤더 -->
+      <div class="rec-modal__header">
+        <button class="rec-modal__close" id="recClose">✕</button>
+        <p class="rec-modal__eyebrow">AI 추천</p>
+        <h2>오늘 뭐 볼까요?</h2>
+        <p>기분과 계절을 알려주시면 딱 맞는 콘텐츠를 찾아드릴게요</p>
+      </div>
+
+      <!-- 바디 -->
+      <div class="rec-modal__body">
+
+        <!-- 기분 -->
+        <div class="rec-section">
+          <h3 class="rec-section__title">지금 기분</h3>
+          <div class="rec-chips" id="moodChips">
+            <button class="rec-chip" data-mood="happy">😄 신나요</button>
+            <button class="rec-chip" data-mood="sad">😢 울고 싶어요</button>
+            <button class="rec-chip" data-mood="thrill">😱 스릴 넘치게</button>
+            <button class="rec-chip" data-mood="relax">😌 편하게 쉬고 싶어요</button>
+            <button class="rec-chip" data-mood="love">🥰 설레고 싶어요</button>
+            <button class="rec-chip" data-mood="think">🤔 생각하고 싶어요</button>
+            <button class="rec-chip" data-mood="adventure">🌍 모험하고 싶어요</button>
+            <button class="rec-chip" data-mood="dark">🌑 어둡고 진하게</button>
+          </div>
+        </div>
+
+        <div class="rec-divider"></div>
+
+        <!-- 계절 -->
+        <div class="rec-section">
+          <h3 class="rec-section__title">계절 느낌</h3>
+          <div class="rec-chips" id="weatherChips">
+            <button class="rec-chip" data-weather="spring">🌸<span>봄</span></button>
+            <button class="rec-chip" data-weather="summer">☀️<span>여름</span></button>
+            <button class="rec-chip" data-weather="autumn">🍂<span>가을</span></button>
+            <button class="rec-chip" data-weather="winter">❄️<span>겨울</span></button>
+          </div>
+        </div>
+
+        <div class="rec-divider"></div>
+
+        <!-- 콘텐츠 타입 -->
+        <div class="rec-section">
+          <h3 class="rec-section__title">콘텐츠 종류</h3>
+          <div class="rec-chips" id="typeChips">
+            <button class="rec-chip active" data-type="both">🎬 둘 다 괜찮아요</button>
+            <button class="rec-chip" data-type="movie">🎥 영화만</button>
+            <button class="rec-chip" data-type="tv">📺 TV 프로그램만</button>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="rec-submit-wrap">
+        <button class="rec-submit" id="recSubmit">추천 받기 →</button>
+        <button class="rec-random" id="recRandom">🎲 랜덤 추천</button>
+      </div>
+
+      <!-- 결과 -->
+      <div class="rec-result" id="recResult" style="display:none">
+        <h3 class="rec-result__title" id="recResultTitle"></h3>
+        <div class="movie-grid" id="recGrid"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 영화 상세 모달 -->
+  <div class="modal-backdrop" id="modalBackdrop">
+    <div class="modal" id="modal">
+      <button class="modal__close" id="modalClose">✕</button>
+      <div class="modal__hero" id="modalHero"></div>
+      <div class="modal__body">
+        <div class="modal__meta">
+          <span class="modal__rating" id="modalRating"></span>
+          <span class="modal__year" id="modalYear"></span>
+          <span class="modal__lang" id="modalLang"></span>
+        </div>
+        <h2 class="modal__title" id="modalTitle"></h2>
+        <p class="modal__overview" id="modalOverview"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 푸터 -->
+  <footer class="footer">
+    <p>Powered by <a href="https://www.themoviedb.org" target="_blank">TMDB</a> &nbsp;|&nbsp; SEONAFLIX &copy; 2026</p>
+  </footer>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
