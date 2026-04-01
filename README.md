@@ -31,10 +31,14 @@ npm run build
 
 ### Vercel
 
-1. GitHub 저장소 연결
-2. Build Command: `npm run build`, Output Directory: `dist`
-3. Environment Variables: `TMDB_API_KEY` = TMDB API 키
-4. 루트의 `api/tmdb.js`가 자동으로 `/api/tmdb`로 동작합니다.
+1. GitHub 저장소 연결 (프로젝트 **Root Directory** 는 저장소 루트)
+2. Framework Preset: **Vite** 로 두면 Build / Output 이 자동 설정됩니다. (수동이면 Build: `npm run build`, Output: `dist`)
+3. **Settings → Environment Variables** 에 `TMDB_API_KEY` 등록 (Production / Preview 모두)
+4. `vercel.json` 의 rewrite 는 `/api/*` 를 제외하고 나머지만 `index.html` 로 보냅니다. `/api/tmdb` 는 `api/tmdb.js` 서버리스가 처리합니다.
+
+**콘솔의 `/api/v6/deployments/...` 404** 는 Vercel 미리보기·대시보드가 끼우는 스크립트 때문인 경우가 많습니다. 우리 앱의 TMDB 호출(`/api/tmdb?...`)과는 무관할 수 있습니다. 사이트 본문(영화 목록)이 뜨는지로 판단하세요.
+
+**영화가 안 뜨면:** Vercel → 해당 프로젝트 → Settings → Environment Variables 에 `TMDB_API_KEY` 가 있는지 확인한 뒤 **Redeploy** 하세요.
 
 ### Netlify
 
