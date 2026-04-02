@@ -1,6 +1,19 @@
 # SEONAFLIX (sun)
 
-TMDB 기반 영화·TV 탐색 페이지. **배포 시 API 키는 서버(프록시)에만 두고**, 브라우저 JS 번들에는 넣지 않습니다.
+TMDB 기반 영화·TV 탐색 페이지. **저장소를 받은 사람은 본인 TMDB API 키를 직접 발급·설정**하면 됩니다. 키는 Git에 올리지 마세요 (`.env` 사용).
+
+## 처음 받은 분 — API 키 넣기
+
+1. [TMDB 설정 → API](https://www.themoviedb.org/settings/api)에서 계정을 만들고 **API Key (v3 auth)** 를 발급합니다.
+2. 프로젝트 루트에서 **`.env.example` 파일을 복사**해 이름을 **`.env`** 로 바꿉니다.
+3. `.env` 안의 `VITE_TMDB_API_KEY=` 뒤에 방금 발급한 키를 붙여넣고 저장합니다.
+4. 터미널에서 `npm install` 후 `npm run dev` 를 다시 실행합니다.
+
+이후에는 영화·TV 목록이 정상적으로 로드됩니다. 자세한 변수 설명은 `.env.example` 주석을 참고하세요.
+
+---
+
+**배포 시**에는 브라우저에 키를 싣지 않도록, 호스팅(Vercel/Netlify 등) 환경 변수에 **`TMDB_API_KEY`** 만 등록하고 서버 프록시(`/api/tmdb`)를 쓰는 방식을 권장합니다.
 
 ## 로컬 개발
 
@@ -9,7 +22,7 @@ npm install
 npm run dev
 ```
 
-`.env`에 `VITE_TMDB_API_KEY`만 있으면 `npm run dev`에서 TMDB로 직접 요청합니다.
+`.env`에 `VITE_TMDB_API_KEY`가 있으면 `npm run dev`에서 TMDB로 직접 요청합니다. 키가 없으면 오류가 나며, 위 **처음 받은 분** 단계를 따라주세요.
 
 프록시와 동일하게 테스트하려면:
 

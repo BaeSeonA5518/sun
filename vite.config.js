@@ -1,6 +1,19 @@
 import { defineConfig } from 'vite';
 
-export default defineConfig({
-  // GitHub Pages에 username.github.io/sun 형태로 올릴 때만 아래 주석 해제
-  // base: '/sun/',
+import { defineConfig, loadEnv } from 'vite';
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+
+  return {
+    server: {
+      proxy: {
+        '/api/tmdb': {
+          target: 'https://api.themoviedb.org/3',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api\/tmdb/, ''),
+        },
+      },
+    },
+  };
 });

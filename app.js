@@ -1,19 +1,24 @@
-/* ===================== CONFIG ===================== */
+/* TMDB: 로컬은 .env의 VITE_TMDB_API_KEY / 배포·프록시 테스트는 /api/tmdb */
 const TMDB_ORIGIN = 'https://api.themoviedb.org/3';
-const PROXY_PATH  = '/api/tmdb';
-const IMG_BASE    = 'https://image.tmdb.org/t/p/';
+const PROXY_PATH = '/api/tmdb';
+const IMG_BASE = 'https://image.tmdb.org/t/p/';
+const TMDB_API_SIGNUP = 'https://www.themoviedb.org/settings/api';
 
-/** 프로덕션 빌드: 키 없이 /api/tmdb 프록시만 사용 (서버 환경변수 TMDB_API_KEY) */
-const useProxy = import.meta.env.PROD || import.meta.env.VITE_FORCE_TMDB_PROXY === 'true';
-const devKey     = import.meta.env.VITE_TMDB_API_KEY;
+const useProxy = import.meta.env?.PROD || import.meta.env?.VITE_FORCE_TMDB_PROXY === 'true';
+const devKey = import.meta.env?.VITE_TMDB_API_KEY || '2c83ec9e72496a126cb0db2da47b9ce7';
 
-function isTmdbConfigured() {
-  return useProxy || !!devKey;
+debugger;
+
+function missingDevKeyMessage() {
+  return [
+    'TMDB API 키가 필요합니다.',
+    '1) ' + TMDB_API_SIGNUP + ' 에서 키 발급',
+    '2) .env.example 을 복사해 .env 로 저장',
+    '3) VITE_TMDB_API_KEY=발급받은키 입력 후 npm run dev 재실행',
+    '(README.md 의 「처음 받은 분」 참고)',
+  ].join('\n');
 }
 
-/**
- * TMDB v3 GET — 개발: 직접 호출(+VITE 키) / 배포: 프록시(키는 서버만)
- */
 async function tmdbFetch(path, params = {}) {
   const sp = new URLSearchParams({ language: 'ko-KR', ...params });
   let url;
@@ -21,7 +26,10 @@ async function tmdbFetch(path, params = {}) {
     sp.set('path', path);
     url = `${PROXY_PATH}?${sp}`;
   } else {
-    if (!devKey) throw new Error('VITE_TMDB_API_KEY 없음');
+    if (!devKey) {
+      console.warn(missingDevKeyMessage());
+      throw new Error('TMDB API 키 없음: .env 에 VITE_TMDB_API_KEY 를 설정하세요.');
+    }
     sp.set('api_key', devKey);
     url = `${TMDB_ORIGIN}/${path}?${sp}`;
   }
@@ -30,731 +38,881 @@ async function tmdbFetch(path, params = {}) {
   return res.json();
 }
 
-// 포스터 없음 / 로드 실패 시 (외부 placeholder 대신 data URL — 항상 표시됨)
-const NO_POSTER_DATA_URL =
-  'data:image/svg+xml,' +
-  encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750">
-      <rect fill="#1c1c1c" width="500" height="750"/>
-      <rect fill="#2a2a2a" x="120" y="260" width="260" height="200" rx="8"/>
-      <circle fill="#3a3a3a" cx="250" cy="340" r="28"/>
-      <path fill="none" stroke="#555" stroke-width="4" d="M210 380 L290 380"/>
-    </svg>`
-  );
+// ===== 가로 스크롤 대응 Lazy Load =====
+// 모바일은 margin을 줄여 한 번에 로드되는 이미지 수를 제한 (스크롤 끊김 완화)
+function posterObserverMargin() {
+  if (window.matchMedia('(max-width: 900px)').matches) {
+    return '0px 160px 0px 160px';
+  }
+  return '0px 600px 0px 600px';
+}
 
-/* ===================== CATEGORY CONFIG ===================== */
-const MOVIE_CATEGORIES = [
-  { key: 'now_playing', label: '지금 상영 중', type: 'movie' },
-  { key: 'popular',     label: '인기 영화',    type: 'movie' },
-  { key: 'top_rated',   label: '최고 평점',    type: 'movie' },
-  { key: 'upcoming',    label: '개봉 예정',    type: 'movie' },
-];
+const posterObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (!entry.isIntersecting) return;
+    const img = entry.target;
+    if (img.dataset.src) {
+      img.src = img.dataset.src;
+      img.removeAttribute('data-src');
+    }
+    posterObserver.unobserve(img);
+  });
+}, { rootMargin: posterObserverMargin() });
 
-const TV_CATEGORIES = [
-  { key: 'airing_today', label: '오늘 방영',       type: 'tv' },
-  { key: 'on_the_air',   label: '현재 방영 중',     type: 'tv' },
-  { key: 'popular',      label: '인기 TV 프로그램', type: 'tv' },
-  { key: 'top_rated',    label: '최고 평점 TV',     type: 'tv' },
-];
-
-const CATEGORIES = [...MOVIE_CATEGORIES, ...TV_CATEGORIES];
-
-/* ===================== STATE ===================== */
+let allMovies = [];   // 영화 검색용
+let allTV = [];       // TV 검색용
+let currentTab = 'home';
 let currentHeroMovie = null;
-let heroPool         = [];   // 영화 + TV 통합 히어로 풀
-let heroIndex        = 0;
-let isSearchMode     = false;
+let currentModalMovie = null;
+let tvLoaded = false;
 
-/* ===================== DOM ===================== */
-const heroEl        = document.getElementById('hero');
-const heroTitle     = document.getElementById('heroTitle');
-const heroDesc      = document.getElementById('heroDesc');
-const heroLabel     = document.getElementById('heroLabel');
-const searchInput        = document.getElementById('searchInput');
-const headerSearchToggle = document.getElementById('headerSearchToggle');
-const headerSearch       = headerSearchToggle.closest('.header__search');
-const searchResultSection = document.getElementById('searchResultSection');
-const searchGrid    = document.getElementById('searchGrid');
-const rowsContainer = document.getElementById('rowsContainer');
-const modalBackdrop = document.getElementById('modalBackdrop');
-const modalClose    = document.getElementById('modalClose');
-const modalHero     = document.getElementById('modalHero');
-const modalTitle    = document.getElementById('modalTitle');
-const modalOverview = document.getElementById('modalOverview');
-const modalRating   = document.getElementById('modalRating');
-const modalYear     = document.getElementById('modalYear');
-const modalLang     = document.getElementById('modalLang');
+// ===== 데이터 정규화 =====
+// TV와 영화 모두 동일한 필드명으로 통일
+function normalizeMovie(item) {
+  return { ...item, media_type: 'movie' };
+}
 
-/* ===================== HEADER SCROLL ===================== */
-window.addEventListener('scroll', () => {
-  document.querySelector('.header').classList.toggle('scrolled', window.scrollY > 50);
-});
+function normalizeTV(item) {
+  return {
+    ...item,
+    media_type: 'tv',
+    title: item.name || item.original_name,
+    original_title: item.original_name,
+    release_date: item.first_air_date || '',
+  };
+}
 
-/* ===================== HERO ===================== */
+// ===== API 호출 =====
+async function fetchMovies(endpoint) {
+  const data = await tmdbFetch(`movie/${endpoint}`, { page: '1' });
+  return data.results.map(normalizeMovie);
+}
+
+async function fetchTV(endpoint) {
+  const data = await tmdbFetch(`tv/${endpoint}`, { page: '1' });
+  return data.results.map(normalizeTV);
+}
+
+// ===== 기분 · 계절 추천 (TMDB Discover, 장르 OR) =====
+const RECO_MOODS = {
+  excited: { label: '신나요', movie: '35|10402|16', tv: '35|10402|16' },
+  sad: { label: '울고 싶어요', movie: '18|10749', tv: '18|10751' },
+  thrill: { label: '스릴 넘치게', movie: '53|28|80|9648', tv: '9648|10759|80' },
+  romance: { label: '설레고 싶어요', movie: '10749', tv: '10749' },
+  chill: { label: '편하게 쉬고 싶어요', movie: '99|36|10751', tv: '99|10751' },
+  thinking: { label: '생각하고 싶어요', movie: '18|9648|99', tv: '18|9648' },
+  adventure: { label: '모험하고 싶어요', movie: '12|28|14', tv: '10759|12|9648' },
+  dark: { label: '어둡고 진하게', movie: '27|53|80|9648', tv: '27|9648|80' },
+};
+
+const RECO_SEASONS = {
+  spring: { label: '봄', movie: '10749|35|10751|10402', tv: '10749|35|10751' },
+  summer: { label: '여름', movie: '12|28|35|10751', tv: '10759|35|10751' },
+  autumn: { label: '가을', movie: '18|53|9648|80', tv: '18|9648|80' },
+  winter: { label: '겨울', movie: '14|10751|16|10402', tv: '14|10751|16' },
+};
+
+function seasonKeyFromDate() {
+  const m = new Date().getMonth() + 1;
+  if (m >= 3 && m <= 5) return 'spring';
+  if (m >= 6 && m <= 8) return 'summer';
+  if (m >= 9 && m <= 11) return 'autumn';
+  return 'winter';
+}
+
+function resolveSeasonGenres(seasonVal, kind) {
+  if (!seasonVal) return '';
+  const key = seasonVal === 'auto' ? seasonKeyFromDate() : seasonVal;
+  const s = RECO_SEASONS[key];
+  return s ? s[kind] : '';
+}
+
+function mergeGenreOr(a, b) {
+  const ids = new Set();
+  [a, b].forEach(str => {
+    if (!str) return;
+    str.split('|').forEach(id => { if (id.trim()) ids.add(id.trim()); });
+  });
+  return [...ids].join('|');
+}
+
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+async function discoverMedia(kind, withGenres, limit) {
+  const page = Math.floor(Math.random() * 12) + 1;
+  const path = kind === 'movie' ? 'discover/movie' : 'discover/tv';
+  const params = {
+    sort_by: 'popularity.desc',
+    page: String(page),
+    'vote_average.gte': '5.5',
+    'vote_count.gte': '40',
+  };
+  if (withGenres) params.with_genres = withGenres;
+  let data;
+  try {
+    data = await tmdbFetch(path, params);
+  } catch {
+    return [];
+  }
+  const raw = data.results || [];
+  const mapped = kind === 'movie' ? raw.map(normalizeMovie) : raw.map(normalizeTV);
+  return mapped.slice(0, limit);
+}
+
+function getSelectedRecoMood() {
+  const el = document.querySelector('#recoStepForm .reco-pill.is-selected');
+  return el ? el.dataset.recoMood : '';
+}
+
+function getSelectedRecoSeason() {
+  const el = document.querySelector('#recoStepForm .reco-season.is-selected');
+  return el ? el.dataset.recoSeason : '';
+}
+
+function getSelectedRecoType() {
+  const el = document.querySelector('#recoStepForm .reco-type.is-selected');
+  return el ? el.dataset.recoType : 'both';
+}
+
+function resetRecoModalToForm() {
+  const form = document.getElementById('recoStepForm');
+  const results = document.getElementById('recoStepResults');
+  const row = document.getElementById('recommendRow');
+  const wrap = document.getElementById('recommendResultsWrap');
+  const summary = document.getElementById('recommendSummary');
+  const loading = document.getElementById('recommendLoading');
+  if (form) form.hidden = false;
+  if (results) results.hidden = true;
+  if (row) row.innerHTML = '';
+  if (wrap) wrap.hidden = true;
+  if (summary) summary.textContent = '';
+  if (loading) loading.hidden = true;
+}
+
+function openRecoModal() {
+  resetRecoModalToForm();
+  const bd = document.getElementById('recoModalBackdrop');
+  bd.classList.add('active');
+  bd.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeRecoModal() {
+  resetRecoModalToForm();
+  const bd = document.getElementById('recoModalBackdrop');
+  bd.classList.remove('active');
+  bd.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = '';
+}
+
+async function runRecommendation() {
+  const mood = getSelectedRecoMood();
+  const season = getSelectedRecoSeason();
+  const type = getSelectedRecoType();
+  const btn = document.getElementById('recoModalSubmit');
+  const loading = document.getElementById('recommendLoading');
+  const wrap = document.getElementById('recommendResultsWrap');
+  const summary = document.getElementById('recommendSummary');
+  const row = document.getElementById('recommendRow');
+  const stepForm = document.getElementById('recoStepForm');
+  const stepResults = document.getElementById('recoStepResults');
+
+  const noMood = mood === '';
+  const noSeason = season === '';
+  const randomMode = noMood && noSeason;
+
+  let movieGenres = '';
+  let tvGenres = '';
+  if (!randomMode) {
+    const mMov = noMood ? '' : (RECO_MOODS[mood]?.movie || '');
+    const mTv = noMood ? '' : (RECO_MOODS[mood]?.tv || '');
+    const sMov = noSeason ? '' : resolveSeasonGenres(season, 'movie');
+    const sTv = noSeason ? '' : resolveSeasonGenres(season, 'tv');
+    movieGenres = mergeGenreOr(mMov, sMov);
+    tvGenres = mergeGenreOr(mTv, sTv);
+  }
+
+  const parts = [];
+  if (randomMode) parts.push('완전 랜덤');
+  else {
+    if (!noMood) parts.push(`기분: ${RECO_MOODS[mood].label}`);
+    if (!noSeason) parts.push(`계절: ${RECO_SEASONS[season]?.label || season}`);
+  }
+  const typeLabel = type === 'both' ? '영화 + TV' : type === 'movie' ? '영화만' : 'TV만';
+  parts.push(typeLabel);
+
+  btn.disabled = true;
+  stepForm.hidden = true;
+  stepResults.hidden = false;
+  loading.hidden = false;
+  wrap.hidden = true;
+  summary.textContent = '';
+  document.querySelector('.reco-modal')?.scrollTo({ top: 0, behavior: 'smooth' });
+
+  try {
+    let items = [];
+    const n = 14;
+
+    if (type === 'movie') {
+      items = await discoverMedia('movie', randomMode ? '' : movieGenres, n);
+    } else if (type === 'tv') {
+      items = await discoverMedia('tv', randomMode ? '' : tvGenres, n);
+    } else {
+      const half = Math.ceil(n / 2);
+      const [movies, tvs] = await Promise.all([
+        discoverMedia('movie', randomMode ? '' : movieGenres, half),
+        discoverMedia('tv', randomMode ? '' : tvGenres, n - half),
+      ]);
+      items = shuffleArray([...movies, ...tvs]);
+    }
+
+    row.innerHTML = '';
+    if (items.length === 0) {
+      summary.textContent = '조건에 맞는 작품을 찾지 못했어요. 조건을 바꿔 다시 눌러보세요.';
+      wrap.hidden = true;
+    } else {
+      summary.textContent = `추천 기준 — ${parts.join(' · ')}`;
+      items.forEach(item => row.appendChild(createMovieCard(item)));
+      wrap.hidden = false;
+    }
+  } catch (e) {
+    console.error(e);
+    summary.textContent = '추천을 불러오지 못했습니다. 잠시 후 다시 시도해주세요.';
+    wrap.hidden = true;
+  } finally {
+    loading.hidden = true;
+    btn.disabled = false;
+  }
+}
+
+// ===== 예고편 키 가져오기 (영화 & TV 공통) =====
+// TV는 TMDB에서 type이 Trailer가 아닌 Teaser/Clip인 경우가 많음 → 우선순위로 통합 선택
+const YOUTUBE_TYPE_ORDER = ['Trailer', 'Teaser', 'Clip', 'Opening Credits', 'Featurette', 'Behind the Scenes'];
+
+function pickYoutubeVideo(results) {
+  if (!results || !results.length) return null;
+  const yt = results.filter(v => v.site === 'YouTube' && v.key);
+  if (!yt.length) return null;
+  for (const t of YOUTUBE_TYPE_ORDER) {
+    const found = yt.find(v => v.type === t);
+    if (found) return found;
+  }
+  return yt[0];
+}
+
+/** @returns {{ site: 'YouTube'|'Vimeo', key: string } | null} */
+async function fetchTrailerVideo(item) {
+  const prefix = item.media_type === 'tv' ? 'tv' : 'movie';
+  const vidPath = `${prefix}/${item.id}/videos`;
+
+  const [koData, enData] = await Promise.all([
+    tmdbFetch(vidPath, { language: 'ko-KR' }),
+    tmdbFetch(vidPath, { language: 'en-US' }),
+  ]);
+  const ko = koData.results || [];
+  const en = enData.results || [];
+
+  const seen = new Set();
+  const merged = [];
+  for (const v of [...ko, ...en]) {
+    if (!v.key || (v.site !== 'YouTube' && v.site !== 'Vimeo')) continue;
+    const id = `${v.site}:${v.key}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(v);
+  }
+
+  const yt = pickYoutubeVideo(merged);
+  if (yt) return { site: 'YouTube', key: yt.key };
+
+  const vm = merged.find(v => v.site === 'Vimeo');
+  return vm ? { site: 'Vimeo', key: vm.key } : null;
+}
+
+// ===== 예고편 미리 불러오기 (모달 열자마자 → 재생 탭 시 캐시로 즉시 iframe 연결) =====
+const trailerPromiseByKey = new Map();
+const trailerResolvedByKey = new Map();
+
+function trailerCacheKey(item) {
+  return `${item.media_type}-${item.id}`;
+}
+
+function prefetchTrailer(item) {
+  const k = trailerCacheKey(item);
+  if (trailerPromiseByKey.has(k)) return trailerPromiseByKey.get(k);
+  const p = fetchTrailerVideo(item).catch(() => null);
+  trailerPromiseByKey.set(k, p);
+  p.then(v => trailerResolvedByKey.set(k, v));
+  return p;
+}
+
+function isMobileLikeDevice() {
+  return window.matchMedia('(max-width: 900px)').matches
+    || window.matchMedia('(pointer: coarse)').matches;
+}
+
+function embedSrcForVideo(video) {
+  if (!video) return null;
+  if (video.site === 'YouTube') {
+    const mute = isMobileLikeDevice() ? '&mute=1' : '';
+    return `https://www.youtube.com/embed/${video.key}?autoplay=1&playsinline=1&rel=0${mute}`;
+  }
+  if (video.site === 'Vimeo') {
+    return `https://player.vimeo.com/video/${video.key}?autoplay=1`;
+  }
+  return null;
+}
+
+// ===== 상세 모달 포스터 영역에서 재생 =====
+function resetPosterVideoState() {
+  const frame = document.getElementById('modalPosterFrame');
+  const img = document.getElementById('modalPoster');
+  const loading = document.getElementById('modalPosterLoading');
+  const fail = document.getElementById('modalPosterFail');
+  const back = document.getElementById('modalPosterBack');
+  if (frame) {
+    frame.src = '';
+    frame.style.display = 'none';
+  }
+  if (img) img.style.display = 'block';
+  if (loading) loading.style.display = 'none';
+  if (fail) fail.style.display = 'none';
+  if (back) back.style.display = 'none';
+}
+
+function showTrailerInPoster(video) {
+  const frame = document.getElementById('modalPosterFrame');
+  const img = document.getElementById('modalPoster');
+  const loading = document.getElementById('modalPosterLoading');
+  const fail = document.getElementById('modalPosterFail');
+  const back = document.getElementById('modalPosterBack');
+  loading.style.display = 'none';
+  const src = embedSrcForVideo(video);
+  if (!src) {
+    fail.style.display = 'flex';
+    return;
+  }
+  img.style.display = 'none';
+  frame.style.display = 'block';
+  back.style.display = 'block';
+  frame.src = src;
+}
+
+function startTrailerInPoster(item) {
+  const k = trailerCacheKey(item);
+  prefetchTrailer(item);
+
+  if (trailerResolvedByKey.has(k)) {
+    showTrailerInPoster(trailerResolvedByKey.get(k));
+    return;
+  }
+
+  document.getElementById('modalPosterLoading').style.display = 'flex';
+  document.getElementById('modalPosterFail').style.display = 'none';
+  trailerPromiseByKey.get(k).then(video => {
+    document.getElementById('modalPosterLoading').style.display = 'none';
+    showTrailerInPoster(video);
+  });
+}
+
+function backToPosterInModal() {
+  resetPosterVideoState();
+}
+
+// ===== 히어로용 별도 영상 모달 (iframe) =====
+async function openVideoModal(item) {
+  prefetchTrailer(item);
+  const backdrop = document.getElementById('videoBackdrop');
+  const frame = document.getElementById('videoFrame');
+  const loading = document.getElementById('videoLoading');
+  const unavailable = document.getElementById('videoUnavailable');
+  const titleEl = document.getElementById('videoModalTitle');
+
+  titleEl.textContent = item.title;
+  frame.style.display = 'none';
+  unavailable.style.display = 'none';
+  loading.style.display = 'flex';
+  frame.src = '';
+
+  backdrop.classList.add('active');
+  document.body.style.overflow = 'hidden';
+
+  const k = trailerCacheKey(item);
+  const video = trailerResolvedByKey.has(k)
+    ? trailerResolvedByKey.get(k)
+    : await trailerPromiseByKey.get(k);
+
+  loading.style.display = 'none';
+
+  const src = embedSrcForVideo(video);
+  if (src) {
+    frame.src = src;
+    frame.style.display = 'block';
+  } else {
+    unavailable.style.display = 'flex';
+  }
+}
+
+// ===== 영상 모달 닫기 =====
+function closeVideoModal() {
+  const frame = document.getElementById('videoFrame');
+  frame.src = '';
+  document.getElementById('videoBackdrop').classList.remove('active');
+  document.body.style.overflow = '';
+}
+
+// ===== 히어로 배너 설정 =====
 function setHero(item) {
-  if (!item) return;
   currentHeroMovie = item;
-
-  const bg = item.backdrop_path
-    ? `${IMG_BASE}original${item.backdrop_path}`
-    : (item.poster_path ? `${IMG_BASE}w1280${item.poster_path}` : '');
-
-  if (bg) heroEl.style.backgroundImage = `url('${bg}')`;
-  heroTitle.textContent = item.title || item.name || '제목 없음';
-  heroDesc.textContent  = item.overview || '';
-  heroLabel.textContent = item._mediaType === 'tv' ? '지금 방영 중' : '지금 상영 중';
+  prefetchTrailer(item);
+  const hero = document.getElementById('hero');
+  if (item.backdrop_path) {
+    hero.style.backgroundImage = `url(${IMG_BASE}original${item.backdrop_path})`;
+  }
+  document.getElementById('heroTag').textContent =
+    item.media_type === 'tv' ? '지금 방영 중' : '지금 상영 중';
+  document.getElementById('heroTitle').textContent = item.title;
+  document.getElementById('heroDesc').textContent = item.overview || '줄거리 정보가 없습니다.';
 }
 
-document.getElementById('heroPlayBtn').addEventListener('click', () => {
-  if (currentHeroMovie) openModal(currentHeroMovie, true, currentHeroMovie._mediaType || 'movie');
-});
-
-document.getElementById('heroInfoBtn').addEventListener('click', () => {
-  if (currentHeroMovie) openModal(currentHeroMovie, false, currentHeroMovie._mediaType || 'movie');
-});
-
-/* ===================== FETCH ===================== */
-async function fetchMovies(category, page = 1, type = 'movie') {
-  return tmdbFetch(`${type}/${category}`, { page: String(page) });
-}
-
-/* ===================== MAKE CARD ===================== */
-function makeCard(movie, badge = '', showRating = true, mediaType = 'movie', badgeCls = '') {
+// ===== 영화 카드 생성 =====
+function createMovieCard(item) {
   const card = document.createElement('div');
   card.className = 'movie-card';
-  card.dataset.mediaType = mediaType; // 카드에 타입 저장
 
-  const path = movie.poster_path && String(movie.poster_path).trim();
-  const posterSrc = path ? `${IMG_BASE}w500${path}` : NO_POSTER_DATA_URL;
+  const label = item.media_type === 'tv' ? '📺' : '🎬';
 
-  const rating    = movie.vote_average ? movie.vote_average.toFixed(1) : 'N/A';
-  const titleText = movie.title || movie.name || '제목 없음';
-  const rawDate   = movie.release_date || movie.first_air_date || '';
-  const releaseDate = rawDate ? rawDate.slice(2, 7).replace(/-/g, '.') : '';
-
-  card.innerHTML = `
-    <img src="${posterSrc}" alt="" loading="lazy" decoding="async" />
-    <div class="movie-card__info">
-      <p class="movie-card__title">${titleText}</p>
-      <div class="movie-card__meta">
-        ${showRating ? `<p class="movie-card__rating">${rating}</p>` : ''}
-        ${releaseDate ? `<p class="movie-card__date">${releaseDate}</p>` : ''}
+  if (item.poster_path) {
+    card.innerHTML = `
+      <img
+        class="movie-card__poster"
+        data-src="${IMG_BASE}w342${item.poster_path}"
+        alt="${item.title}"
+      />
+      <div class="movie-card__info">
+        <p class="movie-card__title">${item.title}</p>
+        <div class="movie-card__rating">
+          ★ ${item.vote_average.toFixed(1)}
+          <span>(${item.vote_count.toLocaleString()})</span>
+        </div>
+        <div class="movie-card__date">📅 ${item.release_date || '미정'}</div>
       </div>
-    </div>
-    ${badge ? `<span class="movie-card__badge ${badgeCls}">${badge}</span>` : ''}
-  `;
+    `;
+    // IntersectionObserver로 뷰포트 근처에 오면 로딩
+    posterObserver.observe(card.querySelector('img'));
+  } else {
+    card.innerHTML = `
+      <div class="movie-card__no-poster">
+        <span class="icon">${label}</span>
+        <span>포스터 없음</span>
+      </div>
+      <div class="movie-card__always-title">${item.title}</div>
+    `;
+  }
 
-  const img = card.querySelector('img');
-  img.alt = titleText;
-  img.addEventListener('error', function onPosterErr() {
-    this.removeEventListener('error', onPosterErr);
-    if (this.src !== NO_POSTER_DATA_URL) this.src = NO_POSTER_DATA_URL;
+  card.addEventListener('mouseenter', () => {
+    // 모달용 w500 이미지를 미리 캐싱
+    if (item.poster_path) {
+      const img = new Image();
+      img.src = `${IMG_BASE}w500${item.poster_path}`;
+    }
   });
-
-  card.addEventListener('click', () => openModal(movie, false, mediaType));
+  card.addEventListener('click', () => openModal(item));
   return card;
 }
 
-/* ===================== BUILD ROW SECTION ===================== */
-function buildRowSection(section, category, label, movies, type = 'movie') {
-  const badgeMap = {
-    now_playing:  { text: '상영 중',   cls: 'movie-card__badge--now'      },
-    upcoming:     { text: '개봉 예정', cls: 'movie-card__badge--upcoming'  },
-    airing_today: { text: '오늘 방영', cls: 'movie-card__badge--airing'    },
-    on_the_air:   { text: '방영 중',   cls: 'movie-card__badge--on-air'    },
-  };
-  const badgeInfo = badgeMap[category] || null;
-  const badge     = badgeInfo ? badgeInfo.text : '';
-  const badgeCls  = badgeInfo ? badgeInfo.cls  : '';
-  const showRating = category !== 'upcoming';
-  let expanded   = false;
-  let extraMovies = [];
-
-  section.innerHTML = `
-    <div class="row__header">
-      <h3 class="row__title">${label}</h3>
-      <div style="display:flex;align-items:center;gap:12px">
-        <div class="row__pagination"></div>
-        <span class="row__see-all">전체 보기 ›</span>
-      </div>
-    </div>
-    <div class="row__scroll-wrap">
-      <button class="row__arrow row__arrow--left hidden" aria-label="이전">
-        <span class="row__arrow-icon">&#8249;</span>
-      </button>
-      <div class="row__track"></div>
-      <button class="row__arrow row__arrow--right" aria-label="다음">
-        <span class="row__arrow-icon">&#8250;</span>
-      </button>
-    </div>
-    <div class="row__grid" style="display:none"></div>
-  `;
-
-  const track      = section.querySelector('.row__track');
-  const arrowLeft  = section.querySelector('.row__arrow--left');
-  const arrowRight = section.querySelector('.row__arrow--right');
-  const pagination = section.querySelector('.row__pagination');
-  const seeAllBtn  = section.querySelector('.row__see-all');
-  const gridEl     = section.querySelector('.row__grid');
-
-  movies.forEach(movie => track.appendChild(makeCard(movie, badge, showRating, type, badgeCls)));
-
-  // 페이지 계산
-  function getPageInfo() {
-    const cardWidth  = (track.firstElementChild?.offsetWidth || 160) + 10;
-    const pageSize   = Math.floor(track.clientWidth / cardWidth);
-    const totalPages = Math.ceil(movies.length / pageSize);
-    const currentPage = Math.round(track.scrollLeft / (pageSize * cardWidth));
-    return { totalPages: Math.max(totalPages, 1), currentPage, pageWidth: pageSize * cardWidth };
-  }
-
-  // 인디케이터 렌더
-  function renderPagination() {
-    const { totalPages, currentPage } = getPageInfo();
-    pagination.innerHTML = '';
-    for (let i = 0; i < totalPages; i++) {
-      const dot = document.createElement('span');
-      dot.className = 'row__page-dot' + (i === currentPage ? ' active' : '');
-      pagination.appendChild(dot);
-    }
-    arrowLeft.classList.toggle('hidden', track.scrollLeft <= 10);
-    arrowRight.classList.toggle('hidden',
-      track.scrollLeft + track.clientWidth >= track.scrollWidth - 10
-    );
-  }
-
-  track.addEventListener('scroll', renderPagination);
-  window.addEventListener('resize', renderPagination);
-  setTimeout(renderPagination, 100); // 카드 렌더 후
-
-  // 화살표 클릭
-  arrowLeft.addEventListener('click', () => {
-    const { pageWidth } = getPageInfo();
-    track.scrollBy({ left: -pageWidth, behavior: 'smooth' });
-  });
-  arrowRight.addEventListener('click', () => {
-    const { pageWidth } = getPageInfo();
-    track.scrollBy({ left: pageWidth, behavior: 'smooth' });
-  });
-
-  // 전체 보기 토글
-  seeAllBtn.addEventListener('click', async () => {
-    expanded = !expanded;
-
-    if (expanded) {
-      seeAllBtn.textContent              = '접기 ↑';
-      section.querySelector('.row__scroll-wrap').style.display = 'none';
-      gridEl.style.display               = 'grid';
-
-      if (gridEl.children.length === 0) {
-        gridEl.innerHTML = Array(8).fill('<div class="skeleton-card grid-skeleton"></div>').join('');
-        try {
-          const today = new Date().toISOString().slice(0, 10);
-          const [d1, d2] = await Promise.all([fetchMovies(category, 1, type), fetchMovies(category, 2, type)]);
-          const merged = [...d1.results, ...d2.results];
-          extraMovies = category === 'upcoming'
-            ? merged.filter(m => m.release_date && m.release_date > today)
-            : merged;
-          gridEl.innerHTML = '';
-          extraMovies.forEach(m => gridEl.appendChild(makeCard(m, badge, showRating, type, badgeCls)));
-        } catch {
-          gridEl.innerHTML = '<p style="color:var(--muted);padding:20px">불러오기 실패</p>';
-        }
-      }
-    } else {
-      seeAllBtn.textContent              = '전체 보기 ›';
-      section.querySelector('.row__scroll-wrap').style.display = '';
-      gridEl.style.display               = 'none';
-    }
-  });
+// ===== 가로 행 렌더링 =====
+function renderRow(items, rowId) {
+  const row = document.getElementById(rowId);
+  row.innerHTML = '';
+  items.forEach(item => row.appendChild(createMovieCard(item)));
 }
 
-/* ===================== SKELETON ROW ===================== */
-function makeSkeletonRow(label, id) {
-  const section = document.createElement('section');
-  section.className = 'row';
-  section.id = `row-${id}`;
-  section.innerHTML = `
-    <div class="row__header">
-      <h3 class="row__title">${label}</h3>
-    </div>
-    <div class="row__scroll-wrap">
-      <div class="row__track">
-        ${Array(10).fill('<div class="skeleton-card"></div>').join('')}
-      </div>
-    </div>
-  `;
-  return section;
-}
+// ===== 검색 결과 렌더링 =====
+function renderSearchResults(items) {
+  const grid = document.getElementById('searchGrid');
+  const searchSection = document.getElementById('searchSection');
 
-/* ===================== SECTION DIVIDER ===================== */
-function makeDivider(title) {
-  const div = document.createElement('div');
-  div.className = 'section-divider';
-  div.innerHTML = `<span>${title}</span>`;
-  return div;
-}
+  document.getElementById('movieSections').style.display = 'none';
+  document.getElementById('tvSections').style.display = 'none';
+  searchSection.style.display = 'block';
 
-/* ===================== INIT ===================== */
-async function init() {
-  const today = new Date().toISOString().slice(0, 10);
-
-  // 영화 섹션 헤더 + 스켈레톤
-  rowsContainer.appendChild(makeDivider('🎬 영화'));
-  MOVIE_CATEGORIES.forEach(({ key, label }) => rowsContainer.appendChild(makeSkeletonRow(label, `movie-${key}`)));
-
-  // TV 섹션 헤더 + 스켈레톤
-  rowsContainer.appendChild(makeDivider('📺 TV 프로그램'));
-  TV_CATEGORIES.forEach(({ key, label }) => rowsContainer.appendChild(makeSkeletonRow(label, `tv-${key}`)));
-
-  // 영화 + TV 동시 fetch
-  const [movieResults, tvResults] = await Promise.all([
-    Promise.allSettled(
-      MOVIE_CATEGORIES.map(({ key }) =>
-        key === 'upcoming'
-          ? Promise.all([fetchMovies(key, 1, 'movie'), fetchMovies(key, 2, 'movie')]).then(([d1, d2]) => ({
-              results: [...d1.results, ...d2.results]
-            }))
-          : fetchMovies(key, 1, 'movie')
-      )
-    ),
-    Promise.allSettled(
-      TV_CATEGORIES.map(({ key }) => fetchMovies(key, 1, 'tv'))
-    ),
-  ]);
-
-  // 히어로 풀: 영화(now_playing) + TV(airing_today) 섞기
-  const heroMovies = movieResults[0].status === 'fulfilled'
-    ? movieResults[0].value.results.slice(0, 10).map(m => ({ ...m, _mediaType: 'movie' }))
-    : [];
-  const heroTV = tvResults[0].status === 'fulfilled'
-    ? tvResults[0].value.results.slice(0, 10).map(m => ({ ...m, _mediaType: 'tv' }))
-    : [];
-
-  // 교대로 섞기 (영화1, TV1, 영화2, TV2 ...)
-  heroPool = [];
-  const maxLen = Math.max(heroMovies.length, heroTV.length);
-  for (let i = 0; i < maxLen; i++) {
-    if (heroMovies[i]) heroPool.push(heroMovies[i]);
-    if (heroTV[i])     heroPool.push(heroTV[i]);
-  }
-
-  if (heroPool.length) {
-    setHero(heroPool[0]);
-  }
-
-  // 영화 행 교체
-  movieResults.forEach((result, i) => {
-    const { key, label } = MOVIE_CATEGORIES[i];
-    const existingSection = document.getElementById(`row-movie-${key}`);
-    if (!existingSection) return;
-
-    if (result.status === 'fulfilled') {
-      const movies = key === 'upcoming'
-        ? result.value.results.filter(m => m.release_date && m.release_date > today)
-        : result.value.results;
-
-      const newSection = document.createElement('section');
-      newSection.className = 'row';
-      newSection.id = `row-movie-${key}`;
-      existingSection.replaceWith(newSection);
-      buildRowSection(newSection, key, label, movies, 'movie');
-    } else {
-      existingSection.innerHTML = `<p style="color:var(--muted);padding:20px 0">${label}을 불러오지 못했습니다.</p>`;
-    }
-  });
-
-  // TV 행 교체
-  tvResults.forEach((result, i) => {
-    const { key, label } = TV_CATEGORIES[i];
-    const existingSection = document.getElementById(`row-tv-${key}`);
-    if (!existingSection) return;
-
-    if (result.status === 'fulfilled') {
-      const newSection = document.createElement('section');
-      newSection.className = 'row';
-      newSection.id = `row-tv-${key}`;
-      existingSection.replaceWith(newSection);
-      buildRowSection(newSection, key, label, result.value.results, 'tv');
-    } else {
-      existingSection.innerHTML = `<p style="color:var(--muted);padding:20px 0">${label}을 불러오지 못했습니다.</p>`;
-    }
-  });
-}
-
-/* ===================== HERO AUTO ROTATE ===================== */
-setInterval(() => {
-  if (!heroPool.length || isSearchMode) return;
-  heroIndex = (heroIndex + 1) % heroPool.length;
-  setHero(heroPool[heroIndex]);
-}, 8000);
-
-/* ===================== SEARCH ===================== */
-let searchTimer = null;
-
-async function doSearch() {
-  const query = searchInput.value.trim();
-
-  if (!query) {
-    isSearchMode = false;
-    searchResultSection.style.display = 'none';
-    rowsContainer.style.display = 'block';
-    return;
-  }
-
-  isSearchMode = true;
-  rowsContainer.style.display = 'none';
-  searchResultSection.style.display = 'block';
-  searchGrid.innerHTML = Array(8).fill('<div class="skeleton-card"></div>').join('');
-
-  try {
-    const data = await tmdbFetch('search/multi', { query, page: '1' });
-
-    // movie / tv 만 필터 (person 제외)
-    const results = (data.results || []).filter(m => m.media_type === 'movie' || m.media_type === 'tv');
-
-    searchGrid.innerHTML = '';
-    if (results.length === 0) {
-      searchGrid.innerHTML = `<div class="no-results"><span>🎬</span>"${query}" 검색 결과가 없습니다.</div>`;
-    } else {
-      results.forEach(m => searchGrid.appendChild(makeCard(m, '', true, m.media_type)));
-    }
-  } catch {
-    searchGrid.innerHTML = `<div class="no-results"><span>⚠️</span>검색 중 오류가 발생했습니다.</div>`;
-  }
-}
-
-// 검색 아이콘 클릭 → 입력창 토글
-headerSearchToggle.addEventListener('click', () => {
-  const isOpen = headerSearch.classList.toggle('open');
-  if (isOpen) {
-    searchInput.focus();
+  if (items.length === 0) {
+    grid.innerHTML = '<p class="no-results">검색 결과가 없습니다.</p>';
   } else {
-    searchInput.value = '';
-    doSearch(); // 닫으면 결과 초기화
+    grid.innerHTML = '';
+    items.forEach(item => grid.appendChild(createMovieCard(item)));
   }
-});
-
-// 바깥 클릭 시 닫기
-document.addEventListener('click', e => {
-  if (!headerSearch.contains(e.target)) {
-    headerSearch.classList.remove('open');
-  }
-});
-
-searchInput.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    headerSearch.classList.remove('open');
-    searchInput.value = '';
-    doSearch();
-  }
-  if (e.key === 'Enter') doSearch();
-});
-
-searchInput.addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(doSearch, 400);
-});
-
-/* ===================== FETCH TRAILER ===================== */
-async function fetchTrailerKey(id, mediaType = 'movie') {
-  const pick = (results) =>
-    results?.find(v => v.site === 'YouTube' && v.type === 'Trailer') ||
-    results?.find(v => v.site === 'YouTube');
-
-  const data = await tmdbFetch(`${mediaType}/${id}/videos`, { language: 'ko-KR' });
-  let video = pick(data.results);
-
-  if (!video) {
-    const enData = await tmdbFetch(`${mediaType}/${id}/videos`, { language: 'en-US' });
-    video = pick(enData.results);
-  }
-  return video ? video.key : null;
 }
 
-/* ===================== MODAL ===================== */
-async function openModal(movie, autoPlay = false, mediaType = 'movie') {
-  const pPath = movie.poster_path && String(movie.poster_path).trim();
-  const backdropSrc = movie.backdrop_path
-    ? `${IMG_BASE}w1280${movie.backdrop_path}`
-    : (pPath ? `${IMG_BASE}w500${pPath}` : NO_POSTER_DATA_URL);
+function clearSearch() {
+  document.getElementById('searchSection').style.display = 'none';
+  const movieEl = document.getElementById('movieSections');
+  const tvEl = document.getElementById('tvSections');
+  if (currentTab === 'home') {
+    movieEl.style.display = 'block';
+    tvEl.style.display = 'block';
+  } else if (currentTab === 'movie') {
+    movieEl.style.display = 'block';
+    tvEl.style.display = 'none';
+  } else {
+    movieEl.style.display = 'none';
+    tvEl.style.display = 'block';
+  }
+}
 
-  const yearRaw = movie.release_date || movie.first_air_date || '';
+// ===== 모달 열기 =====
+function openModal(item) {
+  resetPosterVideoState();
+  prefetchTrailer(item);
 
-  modalTitle.textContent    = movie.title || movie.name || '제목 없음';
-  modalOverview.textContent = movie.overview || '줄거리 정보가 없습니다.';
-  modalRating.textContent   = movie.vote_average ? `★ ${movie.vote_average.toFixed(1)} / 10` : '';
-  modalYear.textContent     = yearRaw ? yearRaw.slice(0, 4) : '';
-  modalLang.textContent     = (movie.original_language || '').toUpperCase();
+  const backdrop = document.getElementById('modalBackdrop');
+  const poster = document.getElementById('modalPoster');
+  const title = document.getElementById('modalTitle');
+  const meta = document.getElementById('modalMeta');
+  const desc = document.getElementById('modalDesc');
 
-  modalBackdrop.classList.add('open');
+  title.textContent = item.title;
+
+  const releaseYear = item.release_date ? item.release_date.split('-')[0] : '미정';
+  const typeLabel = item.media_type === 'tv'
+    ? '<span class="badge badge--tv">TV</span>'
+    : '<span class="badge badge--movie">영화</span>';
+  meta.innerHTML = `
+    ${typeLabel}
+    <span class="badge">${releaseYear}</span>
+    <span class="rating">★ ${item.vote_average.toFixed(1)}</span>
+    <span class="badge">투표 수 ${item.vote_count.toLocaleString()}</span>
+    ${item.original_language ? `<span class="badge">${item.original_language.toUpperCase()}</span>` : ''}
+  `;
+  desc.textContent = item.overview || '줄거리 정보가 제공되지 않습니다.';
+
+  poster.classList.remove('loaded');
+  poster.alt = item.title;
+
+  const newSrc = item.poster_path ? `${IMG_BASE}w500${item.poster_path}` : null;
+  if (newSrc) {
+    const img = new Image();
+    img.onload = () => {
+      poster.src = newSrc;
+      requestAnimationFrame(() => poster.classList.add('loaded'));
+    };
+    img.onerror = () => { poster.src = newSrc; poster.classList.add('loaded'); };
+    img.src = newSrc;
+  } else {
+    poster.src = '';
+    poster.classList.add('loaded');
+  }
+
+  currentModalMovie = item;
+  backdrop.classList.add('active');
   document.body.style.overflow = 'hidden';
-
-  const iframeHTML = (key) =>
-    `<iframe src="https://www.youtube.com/embed/${key}?autoplay=1&rel=0"
-       allow="autoplay; encrypted-media" allowfullscreen
-       style="width:100%;height:100%;border:none;position:absolute;inset:0;"></iframe>`;
-
-  const noTrailerHTML = `<div class="no-trailer"><span>🎬</span><p>영상 정보가 없습니다</p></div>`;
-
-  if (autoPlay) {
-    modalHero.innerHTML = `<div class="no-trailer"><span>⏳</span><p>영상 불러오는 중...</p></div>`;
-    const key = await fetchTrailerKey(movie.id, mediaType);
-    modalHero.innerHTML = key ? iframeHTML(key) : noTrailerHTML;
-  } else {
-    modalHero.innerHTML = `
-      <div class="trailer-thumb" style="background-image:url('${backdropSrc}')">
-        <div class="trailer-thumb__overlay"></div>
-        <button class="trailer-play-btn" id="trailerPlayBtn">
-          <svg viewBox="0 0 68 68" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="34" cy="34" r="34" fill="rgba(0,0,0,0.6)"/>
-            <polygon points="26,20 54,34 26,48" fill="white"/>
-          </svg>
-        </button>
-        <span class="trailer-loading" id="trailerLoading" style="display:none">영상 불러오는 중...</span>
-      </div>
-    `;
-
-    document.getElementById('trailerPlayBtn').addEventListener('click', async () => {
-      document.getElementById('trailerPlayBtn').style.display  = 'none';
-      document.getElementById('trailerLoading').style.display = 'block';
-      const key = await fetchTrailerKey(movie.id, mediaType);
-      modalHero.innerHTML = key ? iframeHTML(key) : noTrailerHTML;
-    });
-  }
 }
 
+// ===== 모달 닫기 =====
 function closeModal() {
-  modalBackdrop.classList.remove('open');
+  resetPosterVideoState();
+  document.getElementById('modalBackdrop').classList.remove('active');
   document.body.style.overflow = '';
-  modalHero.innerHTML = '';
 }
 
-modalClose.addEventListener('click', closeModal);
-modalBackdrop.addEventListener('click', e => { if (e.target === modalBackdrop) closeModal(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
-
-/* ===================== RECOMMENDATION ===================== */
-
-// TMDB 장르 ID — 영화용
-const GENRE = {
-  action: 28, adventure: 12, animation: 16, comedy: 35,
-  crime: 80, documentary: 99, drama: 18, family: 10751,
-  fantasy: 14, horror: 27, mystery: 9648, romance: 10749,
-  scifi: 878, thriller: 53, war: 10752,
-};
-
-// TMDB 장르 ID — TV용 (movie ID → TV ID 변환 테이블)
-const TV_GENRE_MAP = {
-  [GENRE.action]:      10759, // Action & Adventure
-  [GENRE.adventure]:   10759,
-  [GENRE.thriller]:    80,    // Crime (TV엔 thriller 없음)
-  [GENRE.horror]:      9648,  // Mystery (TV엔 horror 없음)
-  [GENRE.scifi]:       10765, // Sci-Fi & Fantasy
-  [GENRE.fantasy]:     10765,
-  [GENRE.war]:         10768, // War & Politics
-  [GENRE.romance]:     18,    // Drama
-};
-
-function toTvGenres(movieGenreIds) {
-  return [...new Set(movieGenreIds.map(id => TV_GENRE_MAP[id] ?? id))];
+// ===== 검색 대상 풀 =====
+function getSearchPool() {
+  if (currentTab === 'movie') return allMovies;
+  if (currentTab === 'tv') return allTV;
+  const seen = new Set();
+  const out = [];
+  for (const m of [...allMovies, ...allTV]) {
+    const key = `${m.media_type}-${m.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
+  }
+  return out;
 }
 
-// 기분 → 장르 매핑
-const MOOD_MAP = {
-  happy:     [GENRE.comedy, GENRE.animation, GENRE.family],
-  sad:       [GENRE.drama, GENRE.romance],
-  thrill:    [GENRE.thriller, GENRE.horror, GENRE.crime],
-  relax:     [GENRE.documentary, GENRE.family, GENRE.animation],
-  love:      [GENRE.romance, GENRE.drama],
-  think:     [GENRE.mystery, GENRE.scifi, GENRE.documentary],
-  adventure: [GENRE.adventure, GENRE.scifi, GENRE.action],
-  dark:      [GENRE.crime, GENRE.thriller, GENRE.war],
-};
+// ===== 검색 필터 =====
+function handleSearch(e) {
+  const query = e.target.value.trim().toLowerCase();
+  if (!query) { clearSearch(); return; }
 
-// 계절 → 장르 매핑
-const WEATHER_MAP = {
-  spring: [GENRE.romance, GENRE.comedy, GENRE.animation],
-  summer: [GENRE.action, GENRE.adventure, GENRE.scifi, GENRE.horror, GENRE.thriller],
-  autumn: [GENRE.drama, GENRE.mystery, GENRE.thriller],
-  winter: [GENRE.family, GENRE.fantasy, GENRE.romance],
-};
-
-// 기분 + 날씨 교집합 우선, 없으면 합집합
-function resolveGenres(mood, weather) {
-  const a = MOOD_MAP[mood]    || [];
-  const b = WEATHER_MAP[weather] || [];
-  const intersection = a.filter(g => b.includes(g));
-  return intersection.length ? intersection : [...new Set([...a, ...b])];
+  const filtered = getSearchPool().filter(m =>
+    (m.title && m.title.toLowerCase().includes(query)) ||
+    (m.original_title && m.original_title.toLowerCase().includes(query))
+  );
+  renderSearchResults(filtered);
 }
 
-async function fetchDiscover(type, genreIds) {
-  const data = await tmdbFetch(`discover/${type}`, {
-    with_genres: genreIds.join(','),
-    sort_by:     'popularity.desc',
-    page:        '1',
+// ===== TV 데이터 반영 (행 렌더 + allTV) =====
+function applyTVResults(onAir, popular, topRated) {
+  const seen = new Set();
+  allTV = [...onAir, ...popular, ...topRated].filter(m => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
   });
-  return data.results || [];
+  renderRow(onAir,    'tvOnAirRow');
+  renderRow(popular,  'tvPopularRow');
+  renderRow(topRated, 'tvTopRatedRow');
+  tvLoaded = true;
 }
 
-// 추천 모달 상태
-const recBackdrop    = document.getElementById('recBackdrop');
-const recClose       = document.getElementById('recClose');
-const recSubmit      = document.getElementById('recSubmit');
-const recRandom      = document.getElementById('recRandom');
-const recResult      = document.getElementById('recResult');
-const recGrid        = document.getElementById('recGrid');
-const recResultTitle = document.getElementById('recResultTitle');
+// ===== TV만 지연 로딩 (초기화 실패 등 예외 시) =====
+async function ensureTVLoaded() {
+  if (tvLoaded) return;
+  const loading = document.getElementById('loading');
+  loading.style.display = 'flex';
+  const [onAir, popular, topRated] = await Promise.all([
+    fetchTV('on_the_air'),
+    fetchTV('popular'),
+    fetchTV('top_rated'),
+  ]);
+  loading.style.display = 'none';
+  applyTVResults(onAir, popular, topRated);
+  document.getElementById('tvSections').style.display = 'block';
+}
 
-// 모든 장르 목록 (랜덤 추천용)
-const ALL_GENRES = Object.values(GENRE);
+// ===== 탭 전환 =====
+async function switchTab(tab) {
+  if (currentTab === tab && document.getElementById('searchSection').style.display === 'none') return;
 
-let selectedMood    = null;
-let selectedWeather = null;
-let selectedType    = 'both';
+  currentTab = tab;
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchSection').style.display = 'none';
 
-// 칩 선택/취소 토글 (이미 선택된 칩 누르면 해제)
-function setupChips(containerId, onSelect, onDeselect) {
-  const container = document.getElementById(containerId);
-  container.querySelectorAll('.rec-chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      const isActive = chip.classList.contains('active');
-      container.querySelectorAll('.rec-chip').forEach(c => c.classList.remove('active'));
+  document.querySelectorAll('.nav-link').forEach(a => {
+    a.classList.toggle('active', a.dataset.tab === tab);
+  });
 
-      if (isActive) {
-        // 이미 선택된 것 → 취소
-        if (onDeselect) onDeselect();
-      } else {
-        // 새로 선택
-        chip.classList.add('active');
-        onSelect(chip.dataset[Object.keys(chip.dataset)[0]]);
-      }
+  const movieEl = document.getElementById('movieSections');
+  const tvEl = document.getElementById('tvSections');
+
+  if (tab === 'home') {
+    await ensureTVLoaded();
+    movieEl.style.display = 'block';
+    tvEl.style.display = 'block';
+    const heroPool = [
+      ...allMovies.filter(m => m.backdrop_path),
+      ...allTV.filter(m => m.backdrop_path),
+    ];
+    const pick = heroPool[Math.floor(Math.random() * heroPool.length)] || allMovies[0] || allTV[0];
+    if (pick) setHero(pick);
+  } else if (tab === 'movie') {
+    movieEl.style.display = 'block';
+    tvEl.style.display = 'none';
+    const heroPool = allMovies.filter(m => m.backdrop_path);
+    const pick = heroPool[Math.floor(Math.random() * heroPool.length)] || allMovies[0];
+    if (pick) setHero(pick);
+  } else {
+    await ensureTVLoaded();
+    movieEl.style.display = 'none';
+    tvEl.style.display = 'block';
+    const heroPool = allTV.filter(m => m.backdrop_path);
+    const pick = heroPool[Math.floor(Math.random() * heroPool.length)] || allTV[0];
+    if (pick) setHero(pick);
+  }
+}
+
+// ===== 헤더 스크롤 효과 (rAF로 프레임당 1회만 갱신 + passive) =====
+let headerScrollPending = false;
+function handleHeaderScroll() {
+  if (headerScrollPending) return;
+  headerScrollPending = true;
+  requestAnimationFrame(() => {
+    const header = document.querySelector('.header');
+    header.classList.toggle('scrolled', window.scrollY > 50);
+    headerScrollPending = false;
+  });
+}
+
+// ===== 초기화 (홈: 영화 + TV 동시 로드) =====
+async function init() {
+  const loading = document.getElementById('loading');
+  const errorEl = document.getElementById('error');
+
+  try {
+    loading.style.display = 'flex';
+    errorEl.style.display = 'none';
+
+    const [[nowPlaying, popular, topRated], [tvOnAir, tvPopular, tvTopRated]] = await Promise.all([
+      Promise.all([
+        fetchMovies('now_playing'),
+        fetchMovies('popular'),
+        fetchMovies('top_rated'),
+      ]),
+      Promise.all([
+        fetchTV('on_the_air'),
+        fetchTV('popular'),
+        fetchTV('top_rated'),
+      ]),
+    ]);
+
+    loading.style.display = 'none';
+
+    const seenM = new Set();
+    allMovies = [...nowPlaying, ...popular, ...topRated].filter(m => {
+      if (seenM.has(m.id)) return false;
+      seenM.add(m.id);
+      return true;
+    });
+
+    applyTVResults(tvOnAir, tvPopular, tvTopRated);
+
+    document.getElementById('movieSections').style.display = 'block';
+    document.getElementById('tvSections').style.display = 'block';
+
+    renderRow(nowPlaying, 'nowPlayingRow');
+    renderRow(popular,    'popularRow');
+    renderRow(topRated,   'topRatedRow');
+
+    const heroCandidates = [
+      ...popular.filter(m => m.backdrop_path),
+      ...tvPopular.filter(m => m.backdrop_path),
+    ];
+    const heroPick = heroCandidates[Math.floor(Math.random() * heroCandidates.length)]
+      || popular[0] || tvPopular[0];
+    setHero(heroPick);
+
+    currentTab = 'home';
+    document.querySelectorAll('.nav-link').forEach(a => {
+      a.classList.toggle('active', a.dataset.tab === 'home');
+    });
+
+  } catch (err) {
+    console.error(err);
+    loading.style.display = 'none';
+    const msgEl = document.getElementById('errorMessage');
+    const noDevKey =
+      !import.meta.env.PROD &&
+      import.meta.env.VITE_FORCE_TMDB_PROXY !== 'true' &&
+      !import.meta.env.VITE_TMDB_API_KEY;
+    if (msgEl && noDevKey) {
+      msgEl.innerHTML =
+        '<strong>TMDB API 키가 필요합니다.</strong><br><br>' +
+        '1. <a href="' +
+        TMDB_API_SIGNUP +
+        '" target="_blank" rel="noopener">themoviedb.org/settings/api</a>에서 키 발급<br>' +
+        '2. 프로젝트 루트에 <code>.env.example</code>을 복사해 <code>.env</code>로 저장<br>' +
+        '3. <code>VITE_TMDB_API_KEY=</code> 뒤에 키를 넣고 <code>npm run dev</code> 다시 실행<br><br>' +
+        '<small>README.md 「처음 받은 분」에도 같은 안내가 있습니다.</small>';
+    } else if (msgEl) {
+      msgEl.textContent = '😢 영화 정보를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.';
+    }
+    errorEl.style.display = 'block';
+  }
+}
+
+// ===== 가로 행 화살표 스크롤 =====
+function initRowArrows() {
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.arrow-btn');
+    if (!btn) return;
+    const row = document.getElementById(btn.dataset.row);
+    if (!row) return;
+    const useSmooth = window.matchMedia('(min-width: 901px)').matches;
+    row.scrollBy({
+      left: parseInt(btn.dataset.dir, 10) * 700,
+      behavior: useSmooth ? 'smooth' : 'auto',
     });
   });
 }
 
-setupChips('moodChips',    val => { selectedMood    = val; }, () => { selectedMood    = null; });
-setupChips('weatherChips', val => { selectedWeather = val; }, () => { selectedWeather = null; });
-setupChips('typeChips',    val => { selectedType    = val; }); // 타입은 항상 하나 선택 유지
-
-// 추천 버튼
-document.getElementById('recommendBtn').addEventListener('click', () => {
-  recBackdrop.classList.add('open');
-  recResult.style.display = 'none';
-  document.body.style.overflow = 'hidden';
+// ===== 이벤트 리스너 =====
+document.getElementById('modalClose').addEventListener('click', closeModal);
+document.getElementById('modalBackdrop').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+document.getElementById('heroPlayBtn').addEventListener('click', () => {
+  if (currentHeroMovie) openVideoModal(currentHeroMovie);
+});
+document.getElementById('heroDetailBtn').addEventListener('click', () => {
+  if (currentHeroMovie) openModal(currentHeroMovie);
+});
+document.getElementById('modalPlayBtn').addEventListener('click', () => {
+  if (currentModalMovie) startTrailerInPoster(currentModalMovie);
+});
+document.getElementById('modalPosterBack').addEventListener('click', () => {
+  backToPosterInModal();
+});
+document.getElementById('videoClose').addEventListener('click', closeVideoModal);
+document.getElementById('videoBackdrop').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeVideoModal();
+});
+document.getElementById('searchInput').addEventListener('input', handleSearch);
+window.addEventListener('scroll', handleHeaderScroll, { passive: true });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (document.getElementById('recoModalBackdrop').classList.contains('active')) {
+      closeRecoModal();
+    } else {
+      closeVideoModal();
+      closeModal();
+    }
+  }
 });
 
-function closeRecModal() {
-  recBackdrop.classList.remove('open');
-  document.body.style.overflow = '';
-}
-
-recClose.addEventListener('click', closeRecModal);
-recBackdrop.addEventListener('click', e => { if (e.target === recBackdrop) closeRecModal(); });
-
-// 랜덤 추천
-recRandom.addEventListener('click', async () => {
-  // 기분·계절 칩 모두 해제
-  document.querySelectorAll('#moodChips .rec-chip, #weatherChips .rec-chip')
-    .forEach(c => c.classList.remove('active'));
-  selectedMood = null;
-  selectedWeather = null;
-
-  // 랜덤 장르 2~3개 뽑기
-  const shuffled = [...ALL_GENRES].sort(() => Math.random() - .5);
-  const randomGenres = shuffled.slice(0, 3);
-
-  recRandom.disabled = true;
-  recSubmit.disabled = true;
-  recRandom.textContent = '🎲 뽑는 중...';
-
-  await runRecommend(randomGenres, '🎲 랜덤 추천 결과');
-
-  recRandom.disabled = false;
-  recSubmit.disabled = false;
-  recRandom.textContent = '🎲 랜덤 추천';
+// 네비게이션 탭 클릭
+document.querySelectorAll('.nav-link').forEach(link => {
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    switchTab(link.dataset.tab);
+  });
 });
 
-// 추천 실행
-recSubmit.addEventListener('click', async () => {
-  if (!selectedMood && !selectedWeather) {
-    alert('기분이나 계절을 하나 이상 선택해 주세요!\n(또는 🎲 랜덤 추천을 눌러보세요)');
+document.querySelector('.header__logo').addEventListener('click', () => {
+  switchTab('home');
+  window.scrollTo(0, 0);
+});
+
+document.getElementById('recoFab').addEventListener('click', () => {
+  openRecoModal();
+});
+
+document.getElementById('recoModalClose').addEventListener('click', () => {
+  closeRecoModal();
+});
+
+document.getElementById('recoModalBackdrop').addEventListener('click', (e) => {
+  if (e.target.id === 'recoModalBackdrop') closeRecoModal();
+});
+
+document.getElementById('recoBackToForm').addEventListener('click', () => {
+  resetRecoModalToForm();
+});
+
+document.querySelector('.reco-modal').addEventListener('click', (e) => {
+  const pill = e.target.closest('.reco-pill');
+  if (pill) {
+    const wasSelected = pill.classList.contains('is-selected');
+    document.querySelectorAll('.reco-pill').forEach(p => p.classList.remove('is-selected'));
+    if (!wasSelected) pill.classList.add('is-selected');
     return;
   }
-
-  recSubmit.disabled = true;
-  recRandom.disabled = true;
-  recSubmit.textContent = '추천 중...';
-
-  const genres = resolveGenres(selectedMood, selectedWeather);
-  const moodLabel    = selectedMood    ? document.querySelector(`[data-mood="${selectedMood}"]`)?.textContent    : '';
-  const weatherLabel = selectedWeather ? document.querySelector(`[data-weather="${selectedWeather}"]`)?.textContent : '';
-  const parts = [moodLabel, weatherLabel].filter(Boolean);
-  const title = `${parts.join(' · ')} 분위기에 어울리는 추천`;
-
-  await runRecommend(genres, title);
-
-  recSubmit.disabled = false;
-  recRandom.disabled = false;
-  recSubmit.textContent = '추천 받기 →';
+  const seasonBtn = e.target.closest('.reco-season');
+  if (seasonBtn) {
+    const wasSelected = seasonBtn.classList.contains('is-selected');
+    document.querySelectorAll('.reco-season').forEach(p => p.classList.remove('is-selected'));
+    if (!wasSelected) seasonBtn.classList.add('is-selected');
+    return;
+  }
+  const typeBtn = e.target.closest('.reco-type');
+  if (typeBtn) {
+    document.querySelectorAll('.reco-type').forEach(p => p.classList.remove('is-selected'));
+    typeBtn.classList.add('is-selected');
+  }
 });
 
-async function runRecommend(genres, title) {
-  recResult.style.display = 'none';
-  recGrid.innerHTML = Array(6).fill('<div class="skeleton-card grid-skeleton"></div>').join('');
-  recResult.style.display = 'block';
-  recResult.scrollIntoView({ behavior: 'smooth', block: 'start' });
+document.getElementById('recoModalSubmit').addEventListener('click', () => {
+  runRecommendation();
+});
 
-  try {
-    let movies = [], tvs = [];
-    if (selectedType === 'movie' || selectedType === 'both') {
-      movies = await fetchDiscover('movie', genres);
-    }
-    if (selectedType === 'tv' || selectedType === 'both') {
-      tvs = await fetchDiscover('tv', toTvGenres(genres));
-    }
-
-    const merged = [];
-    const max = Math.max(movies.length, tvs.length);
-    for (let i = 0; i < max; i++) {
-      if (movies[i]) merged.push({ ...movies[i], _mediaType: 'movie' });
-      if (tvs[i])    merged.push({ ...tvs[i],    _mediaType: 'tv'    });
-    }
-
-    recResultTitle.textContent = title;
-    recGrid.innerHTML = '';
-
-    if (merged.length === 0) {
-      recGrid.innerHTML = `<div class="no-results"><span>🎬</span>결과가 없습니다. 다른 조합을 선택해 보세요.</div>`;
-    } else {
-      merged.slice(0, 20).forEach(m => {
-        const card = makeCard(m, '', true, m._mediaType);
-        card.addEventListener('click', () => {
-          closeRecModal();
-          openModal(m, false, m._mediaType);
-        }, { capture: true });
-        recGrid.appendChild(card);
-      });
-    }
-  } catch {
-    recGrid.innerHTML = `<div class="no-results"><span>⚠️</span>추천을 불러오지 못했습니다.</div>`;
-  }
-}
-
-/* ===================== START ===================== */
-if (isTmdbConfigured()) {
-  init();
-} else {
-  const heroTitle = document.getElementById('heroTitle');
-  const heroDesc  = document.getElementById('heroDesc');
-  if (heroTitle) heroTitle.textContent = 'API 설정이 필요합니다';
-  if (heroDesc) {
-    heroDesc.textContent = useProxy
-      ? '배포 서버에 TMDB_API_KEY가 설정됐는지 확인하세요.'
-      : '로컬에서는 .env에 VITE_TMDB_API_KEY를 넣거나 VITE_FORCE_TMDB_PROXY=true 로 프록시를 쓰세요.';
-  }
-  const rc = document.getElementById('rowsContainer');
-  if (rc) {
-    rc.innerHTML = `<p class="no-results" style="padding:40px 4%"><span>🔑</span>README의 환경 변수 안내를 확인하세요.</p>`;
-  }
-}
+// 실행
+initRowArrows();
+init();
