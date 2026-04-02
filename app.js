@@ -5,9 +5,7 @@ const IMG_BASE = 'https://image.tmdb.org/t/p/';
 const TMDB_API_SIGNUP = 'https://www.themoviedb.org/settings/api';
 
 const useProxy = import.meta.env?.PROD || import.meta.env?.VITE_FORCE_TMDB_PROXY === 'true';
-const devKey = import.meta.env?.VITE_TMDB_API_KEY || '2c83ec9e72496a126cb0db2da47b9ce7';
-
-debugger;
+const devKey = import.meta.env?.VITE_TMDB_API_KEY;
 
 function missingDevKeyMessage() {
   return [
