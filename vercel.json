@@ -1,9 +1,8 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
+      "source": "/api/tmdb/:path*",
+      "destination": "https://api.themoviedb.org/3/:path*?api_key=VITE_TMDB_API_KEY"
     }
   ]
 }
